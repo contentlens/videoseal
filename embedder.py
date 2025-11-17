@@ -1,0 +1,117 @@
+import torch
+import torch.nn as nn
+import torch.nn.functional as f
+
+from attenuation import JND11
+
+
+class AdditiveBlending(nn.Module):
+    def __init__(self, image_scaling=1.0, pred_scaling=1.0) -> None:
+        super().__init__()
+        self.image_scaling = image_scaling
+        self.pred_scaling = pred_scaling
+
+    def forward(self, images, preds):
+        out = self.image_scaling * images + self.pred_scaling * preds
+        return out
+
+
+class RGB2YUV(nn.Module):
+    def __init__(self):
+        super(RGB2YUV, self).__init__()
+        self.register_buffer(
+            "M",
+            torch.tensor(
+                [
+                    [0.299, 0.587, 0.114],
+                    [-0.14713, -0.28886, 0.436],
+                    [0.615, -0.51499, -0.10001],
+                ],
+                dtype=torch.float32,
+            ),
+        )
+
+    def forward(self, x):
+        x = x.permute(0, 2, 3, 1).contiguous()  # b h w c
+        yuv = x @ self.M.T
+        yuv = yuv.permute(0, 3, 1, 2).contiguous()
+        return yuv
+
+
+class Embedder(nn.Module):
+    def __init__(
+        self,
+        video_seal_embedder,
+    ):
+        super().__init__()
+        self.embeddor = video_seal_embedder
+        self.rgb_to_yuv = RGB2YUV()
+
+    def forward(self, images, message):
+        # images: b c h w
+        yuv_resized = self.rgb_to_yuv(images)
+        first_image_ychannel = yuv_resized[0:1, 0:1, ...]
+        preds = self.embeddor(first_image_ychannel, message)
+        return preds
+
+
+class FrameEmbedder(nn.Module):
+    def __init__(self, embedder_path, device=torch.device("cpu")) -> None:
+        super().__init__()
+        self.embedder = torch.jit.load(embedder_path).to(device)
+        self.attenuation = JND11().to(device)
+        self.blender = AdditiveBlending(1.0, 0.2).to(device)
+        self.im_size = (256, 256)
+
+    @torch.no_grad
+    def forward(self, images, message):
+        images = images / 255.0
+        images = images.permute(0, 3, 1, 2)  # b c h w
+        b, _, H, W = images.shape
+        # take first image and pass through embedder
+        # attenuate output to get final mask
+        # interleave the final mask and additive blend across batch
+        first_image = images[0:1, ...]
+        res_first_image = f.interpolate(
+            first_image,
+            self.im_size,
+            mode="bilinear",
+            align_corners=True,
+            antialias=True,
+        )
+        pre_watermark_small = self.embedder(res_first_image, message)
+        pre_watermark = f.interpolate(
+            pre_watermark_small,
+            size=(H, W),
+            mode="bilinear",
+            align_corners=True,
+            antialias=True,
+        )
+        watermark = self.attenuation(first_image, pre_watermark)
+        watermark_interleaved = torch.repeat_interleave(watermark, b, 0)
+        result = self.blender(images, watermark_interleaved)
+        result = (torch.clamp(result, 0, 1) * 255).to(torch.uint8)
+        result = result.permute(0, 2, 3, 1)
+        return result
+
+
+class FrameDetector(nn.Module):
+    def __init__(self, detector_path) -> None:
+        super().__init__()
+        self.det = torch.jit.load(detector_path)
+        self.im_size = (256, 256)
+
+    def post_process(self, x):
+        return x
+
+    @torch.no_grad
+    def forward(self, images):
+        images = f.interpolate(
+            images,
+            self.im_size,
+            mode="bilinear",
+            align_corners=True,
+            antialias=True,
+        )
+        x = self.det(images)
+        return self.post_process(x)

@@ -10,3 +10,4 @@ core*
 !**/tests/**/*.mp4
 results*
 slurm*
+*.jit
