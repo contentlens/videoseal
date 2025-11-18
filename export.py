@@ -1,7 +1,7 @@
 import torch
 
 import videoseal
-from embedder import Embedder, FrameEmbedder
+from embedder import Embedder
 from utils import get_random_msg
 
 device = (
@@ -9,17 +9,15 @@ device = (
 )
 
 video_seal_model = videoseal.load("videoseal")
-emb = Embedder(video_seal_model.embedder).to(device)
-images = torch.randn(1, 3, 256, 256).to(device)
+emb = Embedder(video_seal_model.embedder.eval()).eval().half().to(device)
+images = torch.randn(4, 3, 640, 640).half().to(device)
 images = (images - images.min()) / (images.max() - images.min())
-message = get_random_msg().to(device)
+message = get_random_msg().half().to(device)
 emb_traced = torch.jit.trace(emb, (images, message))
-emb_traced.save("embedder_traced_256b.jit")
-emb = FrameEmbedder("embedder_traced_256b.jit", device=device)
-out = emb(images.permute(0, 2, 3, 1), message)
-print(out.device)
+emb_optimized = torch.jit.optimize_for_inference(emb_traced)
+emb_optimized.save("embedder_traced_256b.jit")
 
 
-det = video_seal_model.detector.to(device)
-det_traced = torch.jit.trace(det, (images,))
-det_traced.save("detector_traced_256b.jit")
+# det = video_seal_model.detector.to(device)
+# det_traced = torch.jit.trace(det, (images,))
+# det_traced.save("detector_traced_256b.jit")

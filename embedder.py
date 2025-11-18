@@ -1,3 +1,5 @@
+import cupy as cp
+import tensorrt as trt
 import torch
 import torch.nn as nn
 import torch.nn.functional as f
@@ -115,3 +117,77 @@ class FrameDetector(nn.Module):
         )
         x = self.det(images)
         return self.post_process(x)
+
+
+class EmbedderTRT:
+    def __init__(self, trt_path) -> None:
+        logger = trt.Logger(trt.Logger.ERROR)
+        self.runtime = trt.Runtime(logger)
+        with open(trt_path, "rb") as fp:
+            self.engine = self.runtime.deserialize_cuda_engine(fp.read())
+
+        self.context = self.engine.create_execution_context()
+        self.bindings = [None] * self.engine.num_io_tensors
+        self.INP_1, self.INP_2 = "frame", "message"
+        OUTPUT = "watermarked_frame"
+
+        self.op_dtype = trt.nptype(self.engine.get_tensor_dtype(OUTPUT))
+        self.op_shape = self.engine.get_tensor_shape(OUTPUT)
+
+    def forward(self, images, message):
+        images = cp.from_dlpack(torch.utils.dlpack.to_dlpack(images))
+        message = cp.from_dlpack(torch.utils.dlpack.to_dlpack(message))
+        output = cp.zeros(self.op_shape, self.op_dtype)
+
+        bindings = [
+            int(images.data.ptr),
+            int(message.data.ptr),
+            int(output.data.ptr),
+        ]
+
+        exec_status = self.context.execute_v2(bindings)
+        assert exec_status
+
+        output = torch.utils.dlpack.from_dlpack(output.toDlpack())
+        return output
+
+
+class FrameEmbedderTRT(nn.Module):
+    def __init__(self, embedder_path) -> None:
+        super().__init__()
+        device = torch.device("cuda")
+        self.embedder = EmbedderTRT(embedder_path)
+        self.attenuation = JND11().to(device)
+        self.blender = AdditiveBlending(1.0, 0.2).to(device)
+        self.im_size = (256, 256)
+
+    @torch.no_grad
+    def forward(self, images, message):
+        images = images / 255.0
+        images = images.permute(0, 3, 1, 2)  # b c h w
+        b, _, H, W = images.shape
+        # take first image and pass through embedder
+        # attenuate output to get final mask
+        # interleave the final mask and additive blend across batch
+        first_image = images[0:1, ...]
+        res_first_image = f.interpolate(
+            first_image,
+            self.im_size,
+            mode="bilinear",
+            align_corners=True,
+            antialias=True,
+        )
+        pre_watermark_small = self.embedder.forward(res_first_image, message)
+        pre_watermark = f.interpolate(
+            pre_watermark_small,
+            size=(H, W),
+            mode="bilinear",
+            align_corners=True,
+            antialias=True,
+        )
+        watermark = self.attenuation(first_image, pre_watermark)
+        watermark_interleaved = torch.repeat_interleave(watermark, b, 0)
+        result = self.blender(images, watermark_interleaved)
+        result = (torch.clamp(result, 0, 1) * 255).to(torch.uint8)
+        result = result.permute(0, 2, 3, 1)
+        return result

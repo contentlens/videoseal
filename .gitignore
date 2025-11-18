@@ -11,3 +11,4 @@ core*
 results*
 slurm*
 *.jit
+uv.lock

@@ -1,9 +1,10 @@
+torch==2.3.1
+timm==0.9.16
 pandas
 opencv-python
 omegaconf
 einops
 lpips
-timm==0.9.16
 pre-commit
 ipykernel
 pycocotools
@@ -24,3 +25,6 @@ timm
 scipy
 ffmpeg-python
 av
+onnxscript
+cupy
+tensorrt
