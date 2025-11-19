@@ -3,3 +3,4 @@
 *.onnx
 *.trt
 *.jit
+**/__pycache__/**

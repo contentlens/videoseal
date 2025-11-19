@@ -7,7 +7,7 @@ import torch
 import videoseal
 
 model = videoseal.load("videoseal")
-images = torch.randn(4, 3, 256, 256)
+images = torch.randn(16, 3, 256, 256)
 images = (images - images.min()) / (images.max() - images.min())
 onnx_file = "models/detector_256b_256_256.onnx"
 trt_file = "models/detector_256b_256_256_fp16.trt"
@@ -23,7 +23,7 @@ try:
     )
 
     process = subprocess.Popen(
-        ["trtexec", f"--onnx={onnx_file}", f"--saveEngine={trt_file}", "--fp16"]
+        ["trtexec", f"--onnx={onnx_file}", f"--saveEngine={trt_file}"]
     )
     process.wait()
     assert process.returncode == 0
