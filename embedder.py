@@ -49,20 +49,19 @@ class Embedder(nn.Module):
         self.embeddor = video_seal_embedder
         self.rgb_to_yuv = RGB2YUV()
 
-    def forward(self, images, message):
+    def forward(self, inp, message):
         # images: b c h w
-        yuv_resized = self.rgb_to_yuv(images)
-        first_image_ychannel = yuv_resized[0:1, 0:1, ...]
-        preds = self.embeddor(first_image_ychannel, message)
+        preds = self.embeddor(inp, message)
         return preds
 
 
 class FrameEmbedder(nn.Module):
     def __init__(self, embedder_path, device=torch.device("cpu")) -> None:
         super().__init__()
-        self.embedder = torch.jit.load(embedder_path).to(device)
+        self.embedder = Embedder(model.embedder)
         self.attenuation = JND11().to(device)
         self.blender = AdditiveBlending(1.0, 0.2).to(device)
+        self.rgb_to_yuv = RGB2YUV()
         self.im_size = (256, 256)
 
     @torch.no_grad
@@ -78,15 +77,17 @@ class FrameEmbedder(nn.Module):
             first_image,
             self.im_size,
             mode="bilinear",
-            align_corners=True,
+            align_corners=False,
             antialias=True,
         )
-        pre_watermark_small = self.embedder(res_first_image, message)
+        yuv_resized = self.rgb_to_yuv(res_first_image)
+        first_image_ychannel = yuv_resized[0:1, 0:1, ...]
+        pre_watermark_small = self.embedder(first_image_ychannel, message)
         pre_watermark = f.interpolate(
             pre_watermark_small,
             size=(H, W),
             mode="bilinear",
-            align_corners=True,
+            align_corners=False,
             antialias=True,
         )
         watermark = self.attenuation(first_image, pre_watermark)
@@ -153,12 +154,16 @@ class EmbedderTRT:
 
 
 class FrameEmbedderTRT(nn.Module):
-    def __init__(self, embedder_path) -> None:
+    def __init__(
+        self,
+        embedder_path,
+    ) -> None:
         super().__init__()
         device = torch.device("cuda")
         self.embedder = EmbedderTRT(embedder_path)
         self.attenuation = JND11().to(device)
         self.blender = AdditiveBlending(1.0, 0.2).to(device)
+        self.rgb_to_yuv = RGB2YUV().to(device)
         self.im_size = (256, 256)
 
     @torch.no_grad
@@ -174,15 +179,19 @@ class FrameEmbedderTRT(nn.Module):
             first_image,
             self.im_size,
             mode="bilinear",
-            align_corners=True,
+            align_corners=False,
             antialias=True,
         )
-        pre_watermark_small = self.embedder.forward(res_first_image, message)
+        yuv_resized = self.rgb_to_yuv(res_first_image)
+        first_image_ychannel = yuv_resized[0:1, 0:1, ...]
+        pre_watermark_small = self.embedder.forward(
+            first_image_ychannel, message
+        )
         pre_watermark = f.interpolate(
             pre_watermark_small,
             size=(H, W),
             mode="bilinear",
-            align_corners=True,
+            align_corners=False,
             antialias=True,
         )
         watermark = self.attenuation(first_image, pre_watermark)

@@ -9,6 +9,7 @@ ENV PYTHONPATH=/app/.venv/bin/python3
 ENV UV_HTTP_TIMEOUT=120
 RUN uv tool install pip
 RUN uv sync
+RUN uv pip install --extra-index-url https://pypi.nvidia.com tensorrt-cu12==10.0.1
 COPY . .
 VOLUME [ "/app/models" ]
 RUN chmod +x ./convert_models.sh

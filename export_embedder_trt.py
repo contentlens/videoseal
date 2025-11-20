@@ -10,8 +10,7 @@ from utils import get_random_msg
 
 model = videoseal.load("videoseal")
 message = get_random_msg()
-images = torch.randn(1, 3, 256, 256)
-images = (images - images.min()) / (images.max() - images.min())
+images = torch.clamp(torch.randn(1, 1, 256, 256), 0, 1)
 embedder = Embedder(model.embedder).eval()
 onnx_file = "models/embedder_256b_256_256.onnx"
 trt_file = "models/embedder_256b_256_256_fp16.trt"

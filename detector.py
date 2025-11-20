@@ -60,7 +60,7 @@ class FrameDetectorTRT(nn.Module):
             images,
             self.im_size,
             mode="bilinear",
-            align_corners=True,
+            align_corners=False,
             antialias=True,
         )
         x = self.det.forward(images)
