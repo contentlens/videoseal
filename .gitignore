@@ -12,3 +12,4 @@ results*
 slurm*
 *.jit
 uv.lock
+models
