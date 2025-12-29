@@ -18,9 +18,13 @@ def watermark_message_to_tensor(message_hex):
     return msg.reshape(1, -1)
 
 
-def get_message():
-    msg = create_image_watermark_message()
-    return watermark_message_to_tensor(msg)
+def get_message(batch_size: int = 1) -> np.ndarray:
+    batch = []
+    for _ in range(batch_size):
+        msg = create_image_watermark_message()
+        item = watermark_message_to_tensor(msg)
+        batch.append(item)
+    return np.vstack(batch)
 
 
 def bit_accuracy_256b(preds: torch.tensor, target: torch.tensor, threshold: int = 0):

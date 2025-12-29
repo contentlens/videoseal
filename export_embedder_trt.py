@@ -15,8 +15,10 @@ from torchvision.transforms import Compose, InterpolationMode, Resize, ToTensor
 from tqdm import tqdm
 
 import videoseal
-from src.trt_models import Embedder, FrameEmbedderTRT
+from src.embedder_trt import Embedder, FrameEmbedderTRT
 from src.utils import bit_accuracy_256b, get_message
+
+BATCH_SIZE = 1
 
 transforms = Compose(
     [
@@ -106,11 +108,13 @@ class EmbedderEntropyCalibrator(trt.IInt8EntropyCalibrator2):
 
 
 def build_int8_engine(engine_path):
+    image_size = (BATCH_SIZE, 3, 256, 256)
+
     temp_dir = tempfile.TemporaryDirectory()
     onnx_path = os.path.join(temp_dir.name, "embedder.onnx")
     model = videoseal.load("videoseal")
-    message = torch.tensor(get_message())
-    images = torch.clamp(torch.randn(1, 3, 256, 256), 0, 1)
+    message = torch.tensor(get_message(BATCH_SIZE))
+    images = torch.clamp(torch.randn(*image_size), 0, 1)
     embedder = Embedder(model.embedder).eval()
     torch.onnx.export(
         embedder,
@@ -136,12 +140,12 @@ def build_int8_engine(engine_path):
     config = builder.create_builder_config()
     config.set_flag(trt.BuilderFlag.INT8)
 
-    image_shape = (8, 3, 256, 256)
-    message_shape = (8, 256)
+    message_shape = message.shape
+    print(message_shape, image_size)
     calibrator = EmbedderEntropyCalibrator(
-        data_loader=calibration_data_loader(),
+        data_loader=calibration_data_loader(BATCH_SIZE),
         cache_file="int8.cache",
-        image_shape=image_shape,
+        image_shape=image_size,
         message_shape=message_shape,
     )
     config.int8_calibrator = calibrator
@@ -180,7 +184,6 @@ def benchmark(trt_file):
             messages = messages.to(device)
             st = time.perf_counter()
             watermarked_frames = trt_model(images.permute(0, 2, 3, 1), messages)
-            print(watermarked_frames.shape)
             end = time.perf_counter()
             time_taken_s = end - st
             mean_time_s = mean_time_s * (idx - 1) / idx + time_taken_s / idx
