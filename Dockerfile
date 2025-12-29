@@ -10,7 +10,4 @@ RUN uv sync
 RUN uv pip install --extra-index-url https://pypi.nvidia.com tensorrt-cu12==10.0.1 --system
 COPY . .
 VOLUME [ "/app/models" ]
-CMD [
-    "python", "export_embedder_trt.py" "&&", 
-    "wget", "https://dl.fbaipublicfiles.com/videoseal/y_256b_img.jit", "-P", "models"
-]
+CMD ["python", "export_embedder_trt.py", "&&", "wget", "https://dl.fbaipublicfiles.com/videoseal/y_256b_img.jit", "-P", "models"]
