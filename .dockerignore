@@ -4,3 +4,4 @@
 *.trt
 *.jit
 **/__pycache__/**
+int8.cache

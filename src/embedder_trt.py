@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as f
 
-from attenuation import JND11
+from src.attenuation import JND11
 
 
 class AdditiveBlending(nn.Module):
@@ -49,75 +49,13 @@ class Embedder(nn.Module):
         self.embeddor = video_seal_embedder
         self.rgb_to_yuv = RGB2YUV()
 
-    def forward(self, inp, message):
-        # images: b c h w
-        preds = self.embeddor(inp, message)
-        return preds
-
-
-class FrameEmbedder(nn.Module):
-    def __init__(self, embedder_path, device=torch.device("cpu")) -> None:
-        super().__init__()
-        self.embedder = Embedder(model.embedder)
-        self.attenuation = JND11().to(device)
-        self.blender = AdditiveBlending(1.0, 0.2).to(device)
-        self.rgb_to_yuv = RGB2YUV()
-        self.im_size = (256, 256)
-
-    @torch.no_grad
-    def forward(self, images, message):
-        images = images / 255.0
-        images = images.permute(0, 3, 1, 2)  # b c h w
-        b, _, H, W = images.shape
-        # take first image and pass through embedder
-        # attenuate output to get final mask
-        # interleave the final mask and additive blend across batch
-        first_image = images[0:1, ...]
-        res_first_image = f.interpolate(
-            first_image,
-            self.im_size,
-            mode="bilinear",
-            align_corners=False,
-            antialias=True,
-        )
-        yuv_resized = self.rgb_to_yuv(res_first_image)
-        first_image_ychannel = yuv_resized[0:1, 0:1, ...]
-        pre_watermark_small = self.embedder(first_image_ychannel, message)
-        pre_watermark = f.interpolate(
-            pre_watermark_small,
-            size=(H, W),
-            mode="bilinear",
-            align_corners=False,
-            antialias=True,
-        )
-        watermark = self.attenuation(first_image, pre_watermark)
-        watermark_interleaved = torch.repeat_interleave(watermark, b, 0)
-        result = self.blender(images, watermark_interleaved)
-        result = (torch.clamp(result, 0, 1) * 255).to(torch.uint8)
-        result = result.permute(0, 2, 3, 1)
-        return result
-
-
-class FrameDetector(nn.Module):
-    def __init__(self, detector_path) -> None:
-        super().__init__()
-        self.det = torch.jit.load(detector_path)
-        self.im_size = (256, 256)
-
-    def post_process(self, x):
-        return x
-
-    @torch.no_grad
-    def forward(self, images):
-        images = f.interpolate(
-            images,
-            self.im_size,
-            mode="bilinear",
-            align_corners=True,
-            antialias=True,
-        )
-        x = self.det(images)
-        return self.post_process(x)
+    def forward(self, rgb, message):
+        # rgb -> b c h w
+        yuv = self.rgb_to_yuv(rgb)
+        y = yuv[0:1, 0:1, ...]
+        # y -> b 1 h w
+        pre_watermark = self.embeddor(y, message)
+        return pre_watermark
 
 
 class EmbedderTRT:
@@ -127,6 +65,8 @@ class EmbedderTRT:
         with open(trt_path, "rb") as fp:
             self.engine = self.runtime.deserialize_cuda_engine(fp.read())
 
+        assert self.engine is not None, "Deserialization error"
+
         self.context = self.engine.create_execution_context()
         self.bindings = [None] * self.engine.num_io_tensors
         self.INP_1, self.INP_2 = "frame", "message"
@@ -134,22 +74,22 @@ class EmbedderTRT:
 
         self.op_dtype = trt.nptype(self.engine.get_tensor_dtype(OUTPUT))
         self.op_shape = self.engine.get_tensor_shape(OUTPUT)
+        self.output = cp.zeros(self.op_shape, self.op_dtype)
 
     def forward(self, images, message):
-        images = cp.from_dlpack(torch.utils.dlpack.to_dlpack(images))
-        message = cp.from_dlpack(torch.utils.dlpack.to_dlpack(message))
-        output = cp.zeros(self.op_shape, self.op_dtype)
+        images_cp = cp.from_dlpack(torch.utils.dlpack.to_dlpack(images))
+        message_cp = cp.from_dlpack(torch.utils.dlpack.to_dlpack(message))
 
         bindings = [
-            int(images.data.ptr),
-            int(message.data.ptr),
-            int(output.data.ptr),
+            int(images_cp.data.ptr),
+            int(message_cp.data.ptr),
+            int(self.output.data.ptr),
         ]
 
         exec_status = self.context.execute_v2(bindings)
         assert exec_status
 
-        output = torch.utils.dlpack.from_dlpack(output.toDlpack())
+        output = torch.utils.dlpack.from_dlpack(cp.from_dlpack(self.output))
         return output
 
 
@@ -160,6 +100,7 @@ class FrameEmbedderTRT(nn.Module):
     ) -> None:
         super().__init__()
         device = torch.device("cuda")
+        self.device = device
         self.embedder = EmbedderTRT(embedder_path)
         self.attenuation = JND11().to(device)
         self.blender = AdditiveBlending(1.0, 0.2).to(device)
@@ -168,7 +109,6 @@ class FrameEmbedderTRT(nn.Module):
 
     @torch.no_grad
     def forward(self, images, message):
-        images = images / 255.0
         images = images.permute(0, 3, 1, 2)  # b c h w
         b, _, H, W = images.shape
         # take first image and pass through embedder
@@ -182,11 +122,7 @@ class FrameEmbedderTRT(nn.Module):
             align_corners=False,
             antialias=True,
         )
-        yuv_resized = self.rgb_to_yuv(res_first_image)
-        first_image_ychannel = yuv_resized[0:1, 0:1, ...]
-        pre_watermark_small = self.embedder.forward(
-            first_image_ychannel, message
-        )
+        pre_watermark_small = self.embedder.forward(res_first_image, message)
         pre_watermark = f.interpolate(
             pre_watermark_small,
             size=(H, W),
@@ -194,9 +130,11 @@ class FrameEmbedderTRT(nn.Module):
             align_corners=False,
             antialias=True,
         )
+        ###### [START] TODO: JIT Compile these or do something else?
         watermark = self.attenuation(first_image, pre_watermark)
         watermark_interleaved = torch.repeat_interleave(watermark, b, 0)
         result = self.blender(images, watermark_interleaved)
         result = (torch.clamp(result, 0, 1) * 255).to(torch.uint8)
         result = result.permute(0, 2, 3, 1)
+        ###### [END]
         return result

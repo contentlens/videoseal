@@ -88,14 +88,10 @@ class JND11(nn.Module):
         gray = torch.sum(mat, dim=1)
         la = self.jnd_la(gray)
         cm = self.jnd_cm(gray)
-        hmaps = torch.clamp_min(
-            la + cm - clc * torch.minimum(la, cm), 0
-        )  # b 1 h w
+        hmaps = torch.clamp_min(la + cm - clc * torch.minimum(la, cm), 0)  # b 1 h w
         return hmaps / 255
 
-    def forward(
-        self, images: torch.Tensor, watermark: torch.Tensor
-    ) -> torch.Tensor:
+    def forward(self, images: torch.Tensor, watermark: torch.Tensor) -> torch.Tensor:
         """imgs and deltas must be in [0,1]"""
         hmaps = self.heatmaps(images)
         watermark = hmaps * watermark

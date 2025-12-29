@@ -1,0 +1,25 @@
+{
+  "name": "Existing Dockerfile",
+  "build": {
+    "context": "..",
+    "dockerfile": "../Dockerfile"
+  },
+  "runArgs": [
+    "--gpus",
+    "all",
+    "-m",
+    "8g"
+  ],
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "charliermarsh.ruff",
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "ms-vscode.cpptools",
+        "ms-vscode.cpptools-extension-pack",
+        "tamasfe.even-better-toml"
+      ]
+    }
+  }
+}

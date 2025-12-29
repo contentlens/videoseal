@@ -11,6 +11,7 @@ class DetectorTRT:
         self.runtime = trt.Runtime(logger)
         with open(trt_path, "rb") as fp:
             self.engine = self.runtime.deserialize_cuda_engine(fp.read())
+        assert self.engine is not None, "Deserialization error"
 
         self.context = self.engine.create_execution_context()
         self.bindings = [None] * self.engine.num_io_tensors
@@ -18,6 +19,7 @@ class DetectorTRT:
 
         self.op_dtype = trt.nptype(self.engine.get_tensor_dtype(OUTPUT))
         self.op_shape = self.engine.get_tensor_shape(OUTPUT)
+        print(self.op_dtype, self.op_shape)
 
     def forward(self, images):
         images = cp.from_dlpack(torch.utils.dlpack.to_dlpack(images))
@@ -38,10 +40,9 @@ class DetectorTRT:
 class FrameDetectorTRT(nn.Module):
     def __init__(self, detector_path) -> None:
         super().__init__()
-        device = torch.device("cuda")
+        self.device = torch.device("cuda")
         self.det = DetectorTRT(detector_path)
         self.im_size = (256, 256)
-        self.device = device
 
     def post_process(self, x):
         conf = x[:, 0]
@@ -55,12 +56,12 @@ class FrameDetectorTRT(nn.Module):
         k is the size of the bits, k = 256 by default
         """
         images = images / 255.0
-        images = images.permute(0, 3, 1, 2)
+        images = images.permute(0, 3, 1, 2).to(torch.float16)
         images = f.interpolate(
             images,
             self.im_size,
             mode="bilinear",
-            align_corners=False,
+            align_corners=True,
             antialias=True,
         )
         x = self.det.forward(images)
