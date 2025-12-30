@@ -1,5 +1,5 @@
 {
-  "name": "Existing Dockerfile",
+  "name": "videoseal",
   "build": {
     "context": "..",
     "dockerfile": "../Dockerfile"
