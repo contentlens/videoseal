@@ -93,6 +93,18 @@ class EmbedderTRT:
         return output
 
 
+@torch.compile(fullgraph=True, mode="max-autotune")
+def interpolate(image, height, width):
+    res_first_image = f.interpolate(
+        image,
+        (height, width),
+        mode="bilinear",
+        align_corners=False,
+        antialias=True,
+    )
+    return res_first_image
+
+
 class FrameEmbedderTRT(nn.Module):
     def __init__(
         self,

@@ -25,4 +25,5 @@ dependencies = [
     "cupy==13.6.0",
     "requests",
     "jupyterlab>=4.5.0",
+    "onnxruntime>=1.23.2",
 ]

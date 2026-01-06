@@ -28,6 +28,30 @@ transforms = Compose(
 )
 
 
+class TemporalDataset(Dataset):
+    def __init__(self, data_path, step_size, transforms):
+        super().__init__()
+        path = pathlib.Path(data_path)
+        self.video_list = list(path.iterdir())
+        self.step_size = step_size
+        self.transforms = transforms
+
+    def __getitem__(self, index):
+        video_path = self.video_list[index]
+        frames = []
+
+        for im_path in sorted(video_path.glob("*.jpg")):
+            frame = cv2.imread(str(im_path))
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            frames.append(self.transforms(rgb).unsqueeze(0))
+
+        frames = torch.vstack(frames)
+        return frames, torch.tensor(get_message())
+
+    def __len__(self):
+        return len(self.video_list)
+
+
 class ImageDataset(Dataset):
     def __init__(self, data_path, transform):
         super().__init__()
@@ -196,7 +220,37 @@ def benchmark(trt_file):
     print(f"Mean accuracy: {mean_accuracy}, Mean time: {mean_time_s * 1000:.2f}[ms]")
 
 
+def benchmark_temporal(trt_file):
+    device = torch.device("cuda")
+    trt_model = FrameEmbedderTRT(trt_file)
+    transforms = Compose([ToTensor()])
+
+    def collate_fn(batch):
+        return batch[0][0], batch[0][1]
+
+    dataset = TemporalDataset("data/videos", 0, transforms=transforms)
+    loader = DataLoader(
+        dataset, batch_size=1, shuffle=True, num_workers=0, collate_fn=collate_fn
+    )
+    detector = torch.jit.load("models/y_256b_img.jit").to(device)
+
+    mean_accuracy = 0
+    with torch.no_grad():
+        for idx, (images, message) in tqdm(enumerate(loader, start=1)):
+            images = images.to(device)
+            message = message.to(device)
+            watermarked_frames = trt_model(images.permute(0, 2, 3, 1), message)
+            det_out = detector.detect(watermarked_frames.permute(0, 3, 1, 2) / 255.0)
+            bits = det_out[:, 1:]
+            watermark = torch.clamp(bits, 0, 1)
+            acc = float(bit_accuracy_256b(watermark[0:1], message, threshold=0.5).cpu())
+            mean_accuracy = mean_accuracy * (idx - 1) / idx + acc / idx
+
+    print(f"Mean accuracy: {mean_accuracy:.2f}")
+
+
 if __name__ == "__main__":
     trt_file = "models/embedder.trt"
     build_int8_engine(trt_file)
     benchmark(trt_file)
+    # benchmark_temporal(trt_file)

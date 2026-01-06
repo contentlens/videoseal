@@ -1,5 +1,5 @@
 FROM nvcr.io/nvidia/tensorrt:24.05-py3
-RUN apt-get update -y && apt-get install wget ffmpeg libsm6 libxext6 -y
+RUN apt-get update -y && apt-get install wget ffmpeg libsm6 libxext6 git -y
 RUN wget -qO- https://astral.sh/uv/install.sh | sh
 WORKDIR /app
 COPY pyproject.toml .
