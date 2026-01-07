@@ -85,7 +85,7 @@ class JND11(nn.Module):
     def heatmaps(self, imgs: torch.Tensor, clc: float = 0.3) -> torch.Tensor:
         """imgs must be in [0,1]"""
         mat = imgs * self.rgb_to_gray_mat  # type: ignore
-        gray = torch.sum(mat, dim=1)
+        gray = torch.sum(mat, dim=1, keepdim=True)
         la = self.jnd_la(gray)
         cm = self.jnd_cm(gray)
         hmaps = torch.clamp_min(la + cm - clc * torch.minimum(la, cm), 0)  # b 1 h w

@@ -52,7 +52,7 @@ class Embedder(nn.Module):
     def forward(self, rgb, message):
         # rgb -> b c h w
         yuv = self.rgb_to_yuv(rgb)
-        y = yuv[0:1, 0:1, ...]
+        y = yuv[:, 0:1, ...]
         # y -> b 1 h w
         pre_watermark = self.embeddor(y, message)
         return pre_watermark
@@ -106,10 +106,7 @@ def interpolate(image, height, width):
 
 
 class FrameEmbedderTRT(nn.Module):
-    def __init__(
-        self,
-        embedder_path,
-    ) -> None:
+    def __init__(self, embedder_path, step_size) -> None:
         super().__init__()
         device = torch.device("cuda")
         self.device = device
@@ -118,6 +115,7 @@ class FrameEmbedderTRT(nn.Module):
         self.blender = AdditiveBlending(1.0, 0.2).to(device)
         self.rgb_to_yuv = RGB2YUV().to(device)
         self.im_size = (256, 256)
+        self.step_size = step_size
 
     @torch.no_grad
     def forward(self, images, message):
@@ -126,15 +124,15 @@ class FrameEmbedderTRT(nn.Module):
         # take first image and pass through embedder
         # attenuate output to get final mask
         # interleave the final mask and additive blend across batch
-        first_image = images[0:1, ...]
-        res_first_image = f.interpolate(
-            first_image,
+        first_images = images[:: self.step_size, ...]
+        res_first_images = f.interpolate(
+            first_images,
             self.im_size,
             mode="bilinear",
             align_corners=False,
             antialias=True,
         )
-        pre_watermark_small = self.embedder.forward(res_first_image, message)
+        pre_watermark_small = self.embedder.forward(res_first_images, message)
         pre_watermark = f.interpolate(
             pre_watermark_small,
             size=(H, W),
@@ -143,8 +141,8 @@ class FrameEmbedderTRT(nn.Module):
             antialias=True,
         )
         ###### [START] TODO: JIT Compile these or do something else?
-        watermark = self.attenuation(first_image, pre_watermark)
-        watermark_interleaved = torch.repeat_interleave(watermark, b, 0)
+        watermark = self.attenuation(first_images, pre_watermark)
+        watermark_interleaved = torch.repeat_interleave(watermark, self.step_size, 0)
         result = self.blender(images, watermark_interleaved)
         result = (torch.clamp(result, 0, 1) * 255).to(torch.uint8)
         result = result.permute(0, 2, 3, 1)
