@@ -11,7 +11,7 @@ import numpy as np
 import tensorrt as trt
 import torch
 from torch.utils.data import DataLoader, Dataset
-from torchvision.transforms import Compose, InterpolationMode, Resize
+from torchvision.transforms import Compose, InterpolationMode, Resize, ToTensor
 from tqdm import tqdm
 
 import videoseal
@@ -20,32 +20,27 @@ from src.utils import bit_accuracy_256b, get_message
 
 BATCH_SIZE = 4
 
-transforms = Compose(
-    [
-        Resize((256, 256), interpolation=InterpolationMode.BILINEAR, antialias=True),
-    ]
-)
-
 
 class ImageDatasetDetector(Dataset):
-    def __init__(self, data_path, videoseal_jit_path, transform=None):
+    def __init__(self, data_path, videoseal_jit_path, transform, out_transform=None):
         super().__init__()
         path = pathlib.Path(data_path)
         self.image_list = list(path.rglob("**/*.jpg"))
         self.transform = transform
+        self.out_transform = out_transform
         self.model = torch.jit.load(videoseal_jit_path)
 
     def __getitem__(self, index):
         image_bgr_np = cv2.imread(self.image_list[index])
         image_rgb_np = cv2.cvtColor(image_bgr_np, cv2.COLOR_BGR2RGB)
-        image = torch.tensor(image_rgb_np) / 255.0
+        image = self.transform(image_rgb_np)
         message = torch.tensor(get_message().reshape(-1))
         with torch.no_grad():
             out = self.model.embed(
-                image.permute(2, 0, 1).unsqueeze(0), message.reshape(1, -1)
+                image.unsqueeze(0), message.reshape(1, -1)
             ).cpu()  # b c h w, float32, [0.0, 1.0]
-        if self.transform:
-            out = self.transform(out).squeeze()
+        if self.out_transform:
+            out = self.out_transform(out).squeeze()
         else:
             out = out.squeeze()
         return out, message
@@ -55,7 +50,24 @@ class ImageDatasetDetector(Dataset):
 
 
 def calibration_data_loader(batch_size=8):
-    dataset = ImageDatasetDetector("data/images", "models/y_256b_img.jit", transforms)
+    out_transform = Compose(
+        [
+            Resize(
+                (256, 256), interpolation=InterpolationMode.BILINEAR, antialias=True
+            ),
+        ]
+    )
+    transform = Compose(
+        [
+            ToTensor(),
+            Resize(
+                (256, 256), interpolation=InterpolationMode.BILINEAR, antialias=True
+            ),
+        ]
+    )
+    dataset = ImageDatasetDetector(
+        "data/images", "models/y_256b_img.jit", transform, out_transform=out_transform
+    )
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=4)
     for images, _ in loader:
         yield images.numpy()
@@ -144,6 +156,49 @@ def build_int8_engine(engine_path):
     )
     config.int8_calibrator = calibrator
     config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, 1 << 32)
+    config.builder_optimization_level = 0
+
+    serialized_engine = builder.build_serialized_network(network, config)
+    if serialized_engine is None:
+        raise RuntimeError("Failed to build engine")
+
+    # Save engine
+    with open(engine_path, "wb") as f:
+        f.write(serialized_engine)
+    temp_dir.cleanup()
+
+
+def build_fp16_engine(engine_path):
+    image_size = (BATCH_SIZE, 3, 256, 256)
+
+    temp_dir = tempfile.TemporaryDirectory()
+    onnx_path = os.path.join(temp_dir.name, "detector.onnx")
+    model = videoseal.load("videoseal")
+    images = torch.clamp(torch.randn(*image_size), 0, 1)
+    detector = model.detector.eval()
+    torch.onnx.export(
+        detector,
+        (images,),
+        onnx_path,
+        export_params=True,
+        input_names=["frame"],
+        output_names=["message"],
+    )
+    logger = trt.Logger(trt.Logger.INFO)
+    builder = trt.Builder(logger)
+    network = builder.create_network(
+        1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH)
+    )
+    parser = trt.OnnxParser(network, logger)
+
+    with open(onnx_path, "rb") as f:
+        if not parser.parse(f.read()):
+            for i in range(parser.num_errors):
+                print(parser.get_error(i))
+            raise RuntimeError("ONNX parsing failed")
+
+    config = builder.create_builder_config()
+    config.builder_optimization_level = 0
 
     serialized_engine = builder.build_serialized_network(network, config)
     if serialized_engine is None:
@@ -161,7 +216,26 @@ def benchmark(trt_file):
     device = torch.device("cuda")
     trt_model = FrameDetectorTRT(trt_file)
 
-    dataset = ImageDatasetDetector("data/images", "models/y_256b_img.jit", transforms)
+    transform = Compose(
+        [
+            ToTensor(),
+            Resize(
+                (1080, 1080), interpolation=InterpolationMode.BILINEAR, antialias=True
+            ),
+        ]
+    )
+
+    out_transforms = Compose(
+        [
+            Resize(
+                (1080, 1080), interpolation=InterpolationMode.BILINEAR, antialias=True
+            ),
+        ]
+    )
+
+    dataset = ImageDatasetDetector(
+        "data/images", "models/y_256b_img.jit", transform, out_transforms
+    )
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=0)
 
     mean_accuracy = 0
@@ -177,6 +251,7 @@ def benchmark(trt_file):
             mean_time_s = mean_time_s * (idx - 1) / idx + time_taken_s / idx
             watermark = torch.clamp(bits, 0, 1)
             acc = float(bit_accuracy_256b(watermark, messages).cpu())
+
             mean_accuracy = mean_accuracy * (idx - 1) / idx + acc / idx
 
     print(f"Mean accuracy: {mean_accuracy}, Mean time: {mean_time_s * 1000:.2f}[ms]")
@@ -185,4 +260,5 @@ def benchmark(trt_file):
 if __name__ == "__main__":
     trt_file = "models/detector.trt"
     build_int8_engine(trt_file)
+    # build_fp16_engine(trt_file)
     benchmark(trt_file)

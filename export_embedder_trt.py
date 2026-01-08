@@ -18,7 +18,7 @@ import videoseal
 from src.embedder_trt import Embedder, FrameEmbedderTRT
 from src.utils import bit_accuracy_256b, get_message
 
-BATCH_SIZE = 3
+BATCH_SIZE = 1
 
 transforms = Compose(
     [
@@ -163,6 +163,7 @@ def build_int8_engine(engine_path):
 
     config = builder.create_builder_config()
     config.set_flag(trt.BuilderFlag.INT8)
+    config.builder_optimization_level = 5
 
     message_shape = message.shape
     print(message_shape, image_size)
@@ -186,8 +187,6 @@ def build_int8_engine(engine_path):
 
 
 def benchmark(trt_file):
-    batch_size = 3
-
     device = torch.device("cuda")
     trt_model = FrameEmbedderTRT(trt_file, step_size=1)
 
@@ -200,14 +199,14 @@ def benchmark(trt_file):
         ]
     )
     dataset = ImageDataset("data/images", transforms_2)
-    loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=0)
+    loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=0)
     detector = torch.jit.load("models/y_256b_img.jit").to(device)
 
     mean_accuracy = 0
     mean_time_s = 0
     with torch.no_grad():
         for idx, (images, messages) in tqdm(enumerate(loader, start=1)):
-            if len(images) < batch_size:
+            if len(images) < BATCH_SIZE:
                 break
             images = images.to(device)
             messages = messages.to(device)
@@ -256,6 +255,6 @@ def benchmark_temporal(trt_file):
 
 if __name__ == "__main__":
     trt_file = "models/embedder.trt"
-    # build_int8_engine(trt_file)
+    build_int8_engine(trt_file)
     benchmark(trt_file)
     # benchmark_temporal(trt_file)

@@ -140,11 +140,9 @@ class FrameEmbedderTRT(nn.Module):
             align_corners=False,
             antialias=True,
         )
-        ###### [START] TODO: JIT Compile these or do something else?
         watermark = self.attenuation(first_images, pre_watermark)
         watermark_interleaved = torch.repeat_interleave(watermark, self.step_size, 0)
         result = self.blender(images, watermark_interleaved)
         result = (torch.clamp(result, 0, 1) * 255).to(torch.uint8)
         result = result.permute(0, 2, 3, 1)
-        ###### [END]
         return result
